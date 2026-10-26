@@ -15,6 +15,8 @@ import { runUpdateCommand } from "./application/UpdateRuntime.js";
 import { createSystemDoctorHost } from "./doctorRuntime.js";
 import { PRODUCT_IDENTITY } from "./identity.js";
 import {
+  classifyClientRegistrationCommand,
+  inspectClientRegistrationCommand,
   invokingPackageRunner,
   packageRunnerRegistrationCommand,
   withoutPackageRunnerIdentity,
@@ -87,7 +89,7 @@ it("plans setup and uninstall against selected home and client overrides", async
       ]),
     );
     expect(host.registrationCommand).toContain(
-      PRODUCT_IDENTITY.registrationPackageSpecifier,
+      PRODUCT_IDENTITY.registrationLaunchSpecifier,
     );
     const clients = await systemUninstallHost(
       environment.HOME,
@@ -397,4 +399,39 @@ it("registers the selected Windows package runner after canonicalizing environme
   } finally {
     await host.close?.();
   }
+});
+
+it("pins the npx launcher with an alias a local checkout cannot satisfy", () => {
+  // npm resolves `name@<version>` from a package.json of the same name and
+  // version, then spawns a bin a source checkout never links, so the client
+  // launches nothing. The alias form forces the pinned registry package.
+  const command = packageRunnerRegistrationCommand("npx");
+  expect(command[2]).toBe(PRODUCT_IDENTITY.registrationLaunchSpecifier);
+  expect(inspectClientRegistrationCommand(command, undefined)).toMatchObject({
+    identity: "owned",
+    launch: "package_runner",
+    package: {
+      reference: PRODUCT_IDENTITY.registrationLaunchSpecifier,
+      exactVersion: PRODUCT_IDENTITY.packageVersion,
+    },
+  });
+});
+
+it("keeps ownership of the pinned spec but rejects an alias to another package", () => {
+  const pinned = [
+    "npx",
+    "-y",
+    PRODUCT_IDENTITY.registrationPackageSpecifier,
+    "mcp",
+  ];
+  expect(classifyClientRegistrationCommand(pinned, undefined)).toBe("owned");
+  const hijacked = [
+    "npx",
+    "-y",
+    `${PRODUCT_IDENTITY.packageName}@npm:not-rea@1.0.0`,
+    "mcp",
+  ];
+  expect(classifyClientRegistrationCommand(hijacked, undefined)).toBe(
+    "foreign",
+  );
 });

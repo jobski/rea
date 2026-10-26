@@ -62,10 +62,18 @@ export const packageRunnerRegistrationCommand = (
   runner: PackageRunner,
   platform: NodeJS.Platform = process.platform,
 ): readonly string[] => {
+  // npx satisfies a bare pinned spec from a local package of the same name and
+  // version, so a client whose working directory is a REA checkout spawns a
+  // missing bin. The alias form forces the pinned registry package instead.
+  // bunx keeps its current spec; its alias resolution is not verified here.
+  const specifier =
+    runner === "npx"
+      ? PRODUCT_IDENTITY.registrationLaunchSpecifier
+      : PRODUCT_IDENTITY.registrationPackageSpecifier;
   const command =
     runner === "npx"
-      ? ["npx", "-y", PRODUCT_IDENTITY.registrationPackageSpecifier, "mcp"]
-      : ["bunx", PRODUCT_IDENTITY.registrationPackageSpecifier, "mcp"];
+      ? ["npx", "-y", specifier, "mcp"]
+      : ["bunx", specifier, "mcp"];
   // Both runners may be .cmd shims on Windows, which clients cannot spawn directly.
   return platform === "win32" ? ["cmd.exe", "/d", "/c", ...command] : command;
 };
@@ -237,6 +245,34 @@ export interface ClientRegistrationCommandFacts {
     | undefined;
 }
 
+/** Package facts a launcher selects. npm alias syntax (`name@npm:name@1.2.3`)
+ * is parsed here once so the pin survives instead of reading as an unknown version. */
+interface PackageReferenceFacts {
+  readonly name: string;
+  /** Package actually installed; equals `name` unless the spec is an alias. */
+  readonly installs: string;
+  readonly version: string | undefined;
+}
+
+const splitPackageVersion = (
+  value: string,
+): readonly [string, string | undefined] => {
+  const at = value.lastIndexOf("@");
+  return at <= 0
+    ? [value, undefined]
+    : [value.slice(0, at), value.slice(at + 1)];
+};
+
+const packageReferenceFacts = (reference: string): PackageReferenceFacts => {
+  const alias = reference.indexOf("@npm:");
+  if (alias === -1) {
+    const [name, version] = splitPackageVersion(reference);
+    return { name, installs: name, version };
+  }
+  const [installs, version] = splitPackageVersion(reference.slice(alias + 5));
+  return { name: reference.slice(0, alias), installs, version };
+};
+
 /** Parse package identity once, retaining exact source spelling and version facts. */
 export const inspectClientRegistrationCommand = (
   command: readonly string[],
@@ -244,16 +280,17 @@ export const inspectClientRegistrationCommand = (
 ): ClientRegistrationCommandFacts => {
   const reference = clientRegistrationPackageReference(command);
   if (reference !== undefined) {
-    const prefix = `${PRODUCT_IDENTITY.packageName}@`;
-    const version = reference.startsWith(prefix)
-      ? reference.slice(prefix.length)
-      : undefined;
+    const facts = packageReferenceFacts(reference);
+    const version = facts.version;
     const normalized = version === undefined ? null : valid(version);
     const owned =
-      reference === PRODUCT_IDENTITY.packageName ||
-      reference === PRODUCT_IDENTITY.packageSpecifier ||
-      reference === PRODUCT_IDENTITY.registrationPackageSpecifier ||
-      normalized !== null;
+      facts.name === PRODUCT_IDENTITY.packageName &&
+      facts.installs === PRODUCT_IDENTITY.packageName &&
+      (reference === PRODUCT_IDENTITY.packageName ||
+        reference === PRODUCT_IDENTITY.packageSpecifier ||
+        reference === PRODUCT_IDENTITY.registrationPackageSpecifier ||
+        reference === PRODUCT_IDENTITY.registrationLaunchSpecifier ||
+        normalized !== null);
     return {
       identity: owned ? "owned" : "foreign",
       launch: "package_runner",
